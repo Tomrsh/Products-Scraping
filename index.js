@@ -1,198 +1,158 @@
 const express = require('express');
-const puppeteer = require('puppeteer');
-const cheerio = require('cheerio');
 const axios = require('axios');
+const cheerio = require('cheerio');
+const cors = require('cors');
+const chromium = require('@sparticuz/chromium');
+const puppeteer = require('puppeteer-core');
+
 const app = express();
-
 app.use(express.json());
+app.use(cors());
 
-// --- FRONTEND UI (HTML/CSS/JS) ---
-const UI = `
+// --- FRONTEND UI SOURCE ---
+const html = `
 <!DOCTYPE html>
 <html lang="hi">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hybrid Data Extractor Pro</title>
+    <title>Pro Hybrid Scraper</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        .glass-card { background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.2); }
-        .gradient-bg { background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); }
-        .loader { border-top-color: #3b82f6; animation: spinner 1.5s linear infinite; }
-        @keyframes spinner { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .glass { background: rgba(255, 255, 255, 0.05); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1); }
+        .loader { border-top-color: #3b82f6; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     </style>
 </head>
-<body class="gradient-bg min-h-screen text-slate-100 p-4 md:p-10">
-    <div class="max-w-6xl mx-auto">
-        <header class="mb-10 text-center">
-            <h1 class="text-4xl font-extrabold mb-2 text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-emerald-400">
-                Hybrid Intelligence Scraper
-            </h1>
-            <p class="text-slate-400">Extract data from Static, Dynamic, & Secure E-commerce Platforms</p>
+<body class="bg-slate-950 text-slate-200 min-h-screen p-4 md:p-10 font-sans">
+    <div class="max-w-5xl mx-auto">
+        <header class="text-center mb-10">
+            <h1 class="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-cyan-300">HYBRID SCRAPER PRO</h1>
+            <p class="text-slate-500 mt-2 text-sm">Extract products from Meesho, Amazon, or any site instantly.</p>
         </header>
 
-        <div class="glass-card p-6 rounded-2xl shadow-2xl mb-8">
+        <div class="glass p-6 rounded-3xl mb-8">
             <div class="flex flex-col md:flex-row gap-4">
-                <input type="text" id="targetUrl" placeholder="Paste URL (Meesho, Amazon, or any site)..." 
-                       class="flex-1 p-4 rounded-xl bg-slate-800 border-none text-white focus:ring-2 focus:ring-blue-500 outline-none">
-                
-                <select id="mode" class="bg-slate-800 p-4 rounded-xl border-none text-white outline-none">
-                    <option value="fast">Fast Mode (Static Sites)</option>
-                    <option value="deep">Deep Scan (Secure/Dynamic Sites)</option>
+                <input type="text" id="url" placeholder="Paste product listing URL..." 
+                       class="flex-1 bg-slate-900 border-none p-4 rounded-2xl outline-none focus:ring-2 focus:ring-cyan-500 transition-all">
+                <select id="mode" class="bg-slate-900 p-4 rounded-2xl border-none outline-none">
+                    <option value="fast">Fast (Static)</option>
+                    <option value="deep">Deep (Dynamic/Secure)</option>
                 </select>
-
-                <button onclick="startExtraction()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 px-8 rounded-xl transition-all shadow-lg hover:shadow-blue-500/50">
-                    Extract Now
-                </button>
+                <button onclick="run()" class="bg-cyan-500 hover:bg-cyan-600 text-slate-950 font-bold py-4 px-8 rounded-2xl transition-all active:scale-95">Extract Data</button>
             </div>
         </div>
 
-        <div id="loader" class="hidden flex flex-col items-center my-10">
-            <div class="loader ease-linear rounded-full border-4 border-t-4 border-gray-200 h-12 w-12 mb-4"></div>
-            <p class="text-blue-400 animate-pulse font-medium">Bypassing Security & Extracting Products...</p>
+        <div id="loading" class="hidden flex flex-col items-center py-10">
+            <div class="loader w-12 h-12 border-4 border-slate-700 rounded-full mb-4"></div>
+            <p class="text-cyan-400 animate-pulse">Bypassing Security & Reading Data...</p>
         </div>
 
-        <div id="results" class="hidden">
+        <div id="results-wrap" class="hidden">
             <div class="flex justify-between items-center mb-6">
-                <h2 class="text-2xl font-bold">Extracted Products (<span id="count">0</span>)</h2>
-                <button onclick="downloadCSV()" class="bg-emerald-600 hover:bg-emerald-700 text-sm py-2 px-4 rounded-lg font-bold">Download CSV</button>
+                <h2 class="text-xl font-bold">Extracted Products (<span id="count" class="text-cyan-400">0</span>)</h2>
+                <button onclick="exportCSV()" class="text-xs bg-slate-800 hover:bg-slate-700 border border-slate-700 py-2 px-4 rounded-full transition-all">Download CSV</button>
             </div>
-            <div id="productGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"></div>
+            <div id="grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6"></div>
         </div>
     </div>
 
     <script>
-        let currentProducts = [];
-
-        async function startExtraction() {
-            const url = document.getElementById('targetUrl').value;
+        let items = [];
+        async function run() {
+            const url = document.getElementById('url').value;
             const mode = document.getElementById('mode').value;
-            if(!url) return alert("Bhai, URL toh daalo!");
+            if(!url) return alert("URL zaroori hai bhai!");
 
-            document.getElementById('loader').classList.remove('hidden');
-            document.getElementById('results').classList.add('hidden');
+            document.getElementById('loading').classList.remove('hidden');
+            document.getElementById('results-wrap').classList.add('hidden');
 
             try {
-                const res = await fetch('/api/hybrid-scrape', {
+                const res = await fetch('/api/scrape', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({ url, mode })
                 });
                 const data = await res.json();
-                
                 if(data.success) {
-                    currentProducts = data.products;
-                    displayProducts(data.products);
-                } else {
-                    alert("Error: " + data.message);
-                }
-            } catch (err) {
-                alert("Server se connection nahi ho paya!");
-            } finally {
-                document.getElementById('loader').classList.add('hidden');
-            }
-        }
-
-        function displayProducts(products) {
-            const grid = document.getElementById('productGrid');
-            const count = document.getElementById('count');
-            grid.innerHTML = '';
-            count.innerText = products.length;
-
-            products.forEach(p => {
-                grid.innerHTML += \`
-                    <div class="glass-card p-4 rounded-xl text-slate-800 hover:scale-[1.02] transition-transform">
-                        <img src="\${p.image}" class="w-full h-48 object-contain rounded-lg mb-4 bg-gray-50">
-                        <h3 class="font-bold text-sm line-clamp-2 h-10">\${p.name}</h3>
-                        <div class="flex justify-between items-center mt-4">
-                            <span class="text-xl font-black text-blue-600">\${p.price}</span>
-                            <span class="bg-green-100 text-green-700 text-[10px] px-2 py-1 rounded-full font-bold">VERIFIED</span>
+                    items = data.products;
+                    document.getElementById('count').innerText = items.length;
+                    document.getElementById('grid').innerHTML = items.map(p => \`
+                        <div class="glass p-4 rounded-2xl hover:border-cyan-500/50 transition-all group">
+                            <img src="\${p.image}" class="w-full h-40 object-contain rounded-xl mb-4 bg-white/5 p-2 group-hover:scale-105 transition-transform">
+                            <h3 class="text-sm font-semibold line-clamp-2 h-10 mb-2">\${p.name}</h3>
+                            <div class="text-lg font-black text-cyan-400">\${p.price}</div>
                         </div>
-                    </div>
-                \`;
-            });
-            document.getElementById('results').classList.remove('hidden');
+                    \`).join('');
+                    document.getElementById('results-wrap').classList.remove('hidden');
+                } else { alert("Failed: " + data.message); }
+            } catch (e) { alert("Error connecting to API"); }
+            finally { document.getElementById('loading').classList.add('hidden'); }
         }
 
-        function downloadCSV() {
-            let csv = 'Product Name,Price,Image URL\\n';
-            currentProducts.forEach(p => {
-                csv += \`"\${p.name.replace(/"/g, '""')}","\${p.price}","\${p.image}"\\n\`;
-            });
+        function exportCSV() {
+            let csv = "Product,Price,Image\\n";
+            items.forEach(i => csv += \`"\${i.name.replace(/"/g,'')}", "\${i.price}", "\${i.image}"\\n\`);
             const blob = new Blob([csv], { type: 'text/csv' });
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.setAttribute('href', url);
-            a.setAttribute('download', 'competitor_products.csv');
-            a.click();
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = 'extracted_data.csv';
+            link.click();
         }
     </script>
 </body>
 </html>
 `;
 
-// --- BACKEND LOGIC ---
+// --- BACKEND API ---
+app.get('/', (req, res) => res.send(html));
 
-app.post('/api/hybrid-scrape', async (req, res) => {
+app.post('/api/scrape', async (req, res) => {
     const { url, mode } = req.body;
     let products = [];
+    let browser = null;
 
     try {
         if (mode === 'deep') {
-            // DEEP SCAN: Puppeteer for Secure/Dynamic Sites (Meesho, Amazon, etc.)
-            const browser = await puppeteer.launch({ 
-                headless: "new",
-                args: ['--no-sandbox', '--disable-setuid-sandbox']
+            browser = await puppeteer.launch({
+                args: [...chromium.args, "--hide-scrollbars", "--disable-web-security"],
+                defaultViewport: chromium.defaultViewport,
+                executablePath: await chromium.executablePath(),
+                headless: chromium.headless,
+                ignoreHTTPSErrors: true,
             });
             const page = await browser.newPage();
-            await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+            await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36');
             
-            await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
-
-            // Auto-scroll logic
-            await page.evaluate(async () => {
-                await new Promise(resolve => {
-                    let totalHeight = 0;
-                    let distance = 300;
-                    let timer = setInterval(() => {
-                        window.scrollBy(0, distance);
-                        totalHeight += distance;
-                        if (totalHeight >= 3000) { clearInterval(timer); resolve(); }
-                    }, 100);
-                });
-            });
-
+            // Timeout optimized for Vercel
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 9000 });
             const content = await page.content();
             const $ = cheerio.load(content);
             
-            // Generic Smart Selector
-            $('.product, .item, [class*="ProductList"], [class*="GridRow"], [class*="card"]').each((i, el) => {
-                const name = $(el).find('h1, h2, h3, h4, p, [class*="title"], [class*="name"]').first().text().trim();
-                const price = $(el).find('[class*="price"], [class*="Heading"], span:contains("₹"), span:contains("$")').first().text().trim();
+            $('.product-card, [class*="ProductList"], [class*="Card"], [class*="grid"] > div').each((i, el) => {
+                if(i > 15) return;
+                const name = $(el).find('h1, h2, h3, h4, p, [class*="title"]').first().text().trim();
+                const price = $(el).find('[class*="price"], span:contains("₹"), span:contains("$")').first().text().trim();
                 const image = $(el).find('img').attr('src');
-                if (name && price && products.length < 30) products.push({ name, price, image: image || 'https://via.placeholder.com/150' });
+                if(name && price) products.push({ name, price, image: image || 'https://via.placeholder.com/150' });
             });
-
-            await browser.close();
         } else {
-            // FAST MODE: Axios + Cheerio for Static Sites
-            const { data } = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+            const { data } = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 5000 });
             const $ = cheerio.load(data);
-            $('.product, .item, .card, tr').each((i, el) => {
-                const name = $(el).find('h2, .title, .name').first().text().trim();
-                const price = $(el).find('.price, .amount').first().text().trim();
+            $('.item, .product, .card, li').each((i, el) => {
+                const name = $(el).find('h2, .name, .title').first().text().trim();
+                const price = $(el).find('.price, .amount, span:contains("₹")').first().text().trim();
                 const image = $(el).find('img').attr('src');
-                if (name && products.length < 50) products.push({ name, price, image });
+                if(name) products.push({ name, price: price || "N/A", image });
             });
         }
-
         res.json({ success: true, products });
-    } catch (err) {
-        res.status(500).json({ success: false, message: err.message });
+    } catch (e) {
+        res.status(500).json({ success: false, message: e.message });
+    } finally {
+        if(browser) await browser.close();
     }
 });
 
-app.get('/', (req, res) => res.send(UI));
-
-app.listen(3000, () => console.log('🔥 Hybrid Scraper Active at http://localhost:3000'));
+module.exports = app;
 

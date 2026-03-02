@@ -11,8 +11,10 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@sparticuz/chromium": "^119.0.0",
     "axios": "^1.13.6",
     "cheerio": "^1.2.0",
+    "cors": "^2.8.5",
     "express": "^5.2.1",
     "puppeteer-core": "^24.37.5"
   }
