@@ -1,201 +1,138 @@
 const express = require('express');
-const axios = require('axios');
-const cheerio = require('cheerio');
-const cors = require('cors');
-const chromium = require('@sparticuz/chromium');
-const puppeteer = require('puppeteer-core');
+const firebase = require('firebase/compat/app');
+require('firebase/compat/database');
+const nodemailer = require('nodemailer');
 
 const app = express();
 app.use(express.json());
-app.use(cors());
 
-// --- FRONTEND DASHBOARD ---
-const dashboard = `
+// --- 1. FIREBASE CONFIG ---
+const firebaseConfig = {
+    apiKey: "AIzaSyAb7V8Xxg5rUYi8UKChEd3rR5dglJ6bLhU",
+    authDomain: "t2-storage-4e5ca.firebaseapp.com",
+    databaseURL: "https://t2-storage-4e5ca-default-rtdb.firebaseio.com",
+    projectId: "t2-storage-4e5ca"
+};
+
+if (!firebase.apps.length) {
+    firebase.initializeApp(firebaseConfig);
+}
+const db = firebase.database();
+
+// --- 2. MAIL CONFIG ---
+const ADMIN_EMAIL = 'tomeshmourya408@gmail.com'; 
+const GMAIL_USER = 'tinumourya0@gmail.com';
+const GMAIL_PASS = 'aztg klva bidf hwyl'; // 16-digit App Password yaha dalein
+
+const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user: GMAIL_USER, pass: GMAIL_PASS }
+});
+
+// --- 3. BACKGROUND LISTENER (For Email) ---
+db.ref('users').on('value', (snapshot) => {
+    const allUsers = snapshot.val();
+    if (!allUsers) return;
+
+    for (let userId in allUsers) {
+        const userData = allUsers[userId];
+        if (userData.reels) {
+            for (let reelId in userData.reels) {
+                const reel = userData.reels[reelId];
+                if (reel.status === 'Pending' && !reel.adminNotified) {
+                    sendMail(userData.email || 'No Email', reel);
+                    db.ref(`users/${userId}/reels/${reelId}`).update({ adminNotified: true });
+                }
+            }
+        }
+    }
+});
+
+async function sendMail(userEmail, reelData) {
+    const mailOptions = {
+        from: `"PromoZone Bot" <${GMAIL_USER}>`,
+        to: ADMIN_EMAIL,
+        subject: `New Reel: ${reelData.campaignTitle}`,
+        html: `<b>User:</b> ${userEmail}<br><b>Link:</b> <a href="${reelData.url}">${reelData.url}</a>`
+    };
+    try { await transporter.sendMail(mailOptions); console.log("✅ Mail Sent"); } 
+    catch (e) { console.error("❌ Mail Error", e); }
+}
+
+// --- 4. ADMIN WEBSITE ROUTE ---
+app.get('/admin', (req, res) => {
+    res.send(`
 <!DOCTYPE html>
-<html lang="hi">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Stealth Scraper Pro</title>
+    <title>PromoZone Admin - All Reels</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        body { background: #0f172a; color: #f8fafc; }
-        .card { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(12px); border: 1px solid #334155; }
-        .btn-gradient { background: linear-gradient(90deg, #3b82f6, #2dd4bf); color: #0f172a; transition: 0.3s; }
-        .btn-gradient:hover { transform: scale(1.02); box-shadow: 0 0 20px rgba(59, 130, 246, 0.4); }
-        .loader { border: 3px solid #1e293b; border-top: 3px solid #3b82f6; border-radius: 50%; width: 24px; height: 24px; animation: spin 1s linear infinite; }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-    </style>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
 </head>
-<body class="p-4 md:p-10 min-h-screen">
-    <div class="max-w-4xl mx-auto">
-        <header class="text-center mb-10">
-            <h1 class="text-4xl font-extrabold tracking-tight">🕵️‍♂️ Stealth <span class="text-teal-400">Scraper</span></h1>
-            <p class="text-slate-400 mt-2">Bypass 403 & Extract Data with High-Quality Analytics</p>
-        </header>
-
-        <div class="card p-6 rounded-3xl shadow-2xl mb-8">
-            <div class="flex flex-col md:flex-row gap-4">
-                <input type="text" id="targetUrl" placeholder="Enter Meesho/Amazon URL..." 
-                       class="flex-1 bg-slate-900 border-none p-4 rounded-2xl outline-none focus:ring-2 focus:ring-teal-500">
-                <button onclick="startScrape()" id="mainBtn" class="btn-gradient font-bold py-4 px-10 rounded-2xl flex items-center justify-center gap-2">
-                    Extract Data
-                </button>
-            </div>
-            <div class="mt-4 flex gap-4 text-xs font-medium text-slate-500">
-                <span>⚡ Fast Mode (Static)</span>
-                <span>🛡️ Deep Scan (Stealth)</span>
-            </div>
-        </div>
-
-        <div id="loaderBox" class="hidden flex flex-col items-center py-12">
-            <div class="loader mb-4"></div>
-            <p class="text-teal-400 animate-pulse font-semibold">Breaking through security filters...</p>
-        </div>
-
-        <div id="results" class="hidden">
-            <div class="flex justify-between items-center mb-6">
-                <h2 class="text-xl font-bold">Total Products: <span id="count" class="text-teal-400">0</span></h2>
-                <button onclick="downloadCSV()" class="bg-slate-800 hover:bg-slate-700 py-2 px-5 rounded-full text-xs border border-slate-600 transition-all">Export CSV</button>
-            </div>
-            <div id="productGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6"></div>
+<body class="bg-gray-900 text-white p-5 md:p-10">
+    <div class="max-w-6xl mx-auto">
+        <h1 class="text-3xl font-bold text-indigo-400 mb-8 border-b border-gray-700 pb-4">🚀 All Submitted Reels</h1>
+        
+        <div class="overflow-x-auto bg-gray-800 rounded-xl shadow-2xl">
+            <table class="w-full text-left">
+                <thead class="bg-indigo-600 text-white">
+                    <tr>
+                        <th class="p-4">User Email</th>
+                        <th class="p-4">Campaign</th>
+                        <th class="p-4">Reel URL</th>
+                        <th class="p-4">Rate</th>
+                        <th class="p-4 text-center">Status</th>
+                    </tr>
+                </thead>
+                <tbody id="admin-table-body" class="divide-y divide-gray-700">
+                    </tbody>
+            </table>
         </div>
     </div>
 
     <script>
-        let currentData = [];
+        const config = ${JSON.stringify(firebaseConfig)};
+        firebase.initializeApp(config);
+        const db = firebase.database();
 
-        async function startScrape() {
-            const url = document.getElementById('targetUrl').value;
-            if(!url) return alert("Bhai, URL toh daalo!");
+        db.ref('users').on('value', (snapshot) => {
+            const users = snapshot.val();
+            const tableBody = document.getElementById('admin-table-body');
+            tableBody.innerHTML = '';
 
-            const btn = document.getElementById('mainBtn');
-            const loader = document.getElementById('loaderBox');
-            const results = document.getElementById('results');
-
-            btn.disabled = true;
-            loader.classList.remove('hidden');
-            results.classList.add('hidden');
-
-            try {
-                const response = await fetch('/api/scrape', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ url, mode: 'deep' })
-                });
-                const data = await response.json();
-                
-                if(data.success) {
-                    currentData = data.products;
-                    display(data.products);
-                } else { alert("Error: " + data.message); }
-            } catch (err) { alert("Server Error!"); }
-            finally {
-                btn.disabled = false;
-                loader.classList.add('hidden');
+            for (let uId in users) {
+                const user = users[uId];
+                if (user.reels) {
+                    for (let rId in user.reels) {
+                        const r = user.reels[rId];
+                        tableBody.innerHTML += \`
+                            <tr class="hover:bg-gray-700 transition">
+                                <td class="p-4 text-sm font-medium">\${user.email || 'N/A'}</td>
+                                <td class="p-4 text-indigo-300 font-bold">\${r.campaignTitle}</td>
+                                <td class="p-4"><a href="\${r.url}" target="_blank" class="text-blue-400 underline truncate block w-48">\${r.url}</a></td>
+                                <td class="p-4 text-green-400 font-bold">₹\${r.ratePerMillion}</td>
+                                <td class="p-4 text-center">
+                                    <span class="px-3 py-1 rounded-full text-xs font-black \${r.status === 'Pending' ? 'bg-yellow-500 text-yellow-900' : 'bg-green-500 text-white'}">
+                                        \${r.status}
+                                    </span>
+                                </td>
+                            </tr>
+                        \`;
+                    }
+                }
             }
-        }
-
-        function display(products) {
-            const grid = document.getElementById('productGrid');
-            const count = document.getElementById('count');
-            grid.innerHTML = '';
-            count.innerText = products.length;
-
-            products.forEach(p => {
-                grid.innerHTML += \`
-                    <div class="card p-4 rounded-2xl hover:border-teal-500/50 transition-all">
-                        <img src="\${p.image}" class="w-full h-40 object-contain rounded-xl mb-4 bg-white p-2">
-                        <h3 class="text-sm font-semibold line-clamp-2 h-10 mb-2">\${p.name}</h3>
-                        <div class="flex justify-between items-center">
-                            <span class="text-lg font-bold text-teal-400">\${p.price}</span>
-                            <span class="text-[10px] bg-slate-700 px-2 py-1 rounded text-slate-400">In Stock</span>
-                        </div>
-                    </div>
-                \`;
-            });
-            document.getElementById('results').classList.remove('hidden');
-        }
-
-        function downloadCSV() {
-            let csv = 'Product Name,Price,Image\\n';
-            currentData.forEach(p => csv += \`"\${p.name}","\${p.price}","\${p.image}"\\n\`);
-            const blob = new Blob([csv], { type: 'text/csv' });
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'meesho_data.csv';
-            a.click();
-        }
+        });
     </script>
 </body>
 </html>
-`;
-
-// --- BACKEND LOGIC ---
-app.get('/', (req, res) => res.send(dashboard));
-
-app.post('/api/scrape', async (req, res) => {
-    const { url } = req.body;
-    let browser = null;
-    let products = [];
-
-    try {
-        browser = await puppeteer.launch({
-            args: [
-                ...chromium.args,
-                "--disable-blink-features=AutomationControlled", // Website automation detect nahi kar payegi
-                "--no-sandbox",
-                "--disable-web-security"
-            ],
-            defaultViewport: chromium.defaultViewport,
-            executablePath: await chromium.executablePath(),
-            headless: chromium.headless,
-        });
-
-        const page = await browser.newPage();
-        
-        // Anti-403 Stealth Headers
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
-        await page.setExtraHTTPHeaders({
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Referer': 'https://www.google.com/',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8'
-        });
-
-        // Script to hide automation traces
-        await page.evaluateOnNewDocument(() => {
-            Object.defineProperty(navigator, 'webdriver', { get: () => false });
-        });
-
-        await page.goto(url, { waitUntil: 'networkidle2', timeout: 9500 });
-
-        // Scroll logic specifically for Meesho
-        await page.evaluate(() => { window.scrollBy(0, 800); });
-        await new Promise(r => setTimeout(r, 1000));
-
-        const content = await page.content();
-        const $ = cheerio.load(content);
-
-        // Smart Universal Selector for E-commerce
-        $('div[class*="ProductList__GridRow"] > div, .product-card, [class*="Card"], [class*="grid"] > div').each((i, el) => {
-            if(i > 18) return;
-            const name = $(el).find('p[class*="ProductTitle"], h2, h3, .title, span[class*="Name"]').first().text().trim();
-            const price = $(el).find('h5[class*="Heading"], span:contains("₹"), .price').first().text().trim();
-            const image = $(el).find('img').attr('src');
-            
-            if(name && price) {
-                products.push({ name, price, image: image || 'https://via.placeholder.com/150' });
-            }
-        });
-
-        res.json({ success: true, products });
-    } catch (e) {
-        res.status(500).json({ success: false, message: "Security blocked the request. Try again." });
-    } finally {
-        if(browser) await browser.close();
-    }
+    `);
 });
 
-module.exports = app;
+const PORT = 3000;
+app.listen(PORT, () => {
+    console.log("✅ Monitor Active");
+    console.log(`🌐 Admin Panel: http://localhost:\${PORT}/admin`);
+});
 
